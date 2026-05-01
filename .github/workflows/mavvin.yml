@@ -1,0 +1,84 @@
+# .github/workflows/macos-vnc-debug.yml
+name: 🔬 macOS VNC Debug Session (CI Only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts_authkey:
+        description: "Tailscale auth key"
+        required: true
+      debug_password:
+        description: "VNC password (8 chars max)"
+        required: true
+        type: password
+
+jobs:
+  debug-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30  # Short timeout for debugging only
+    env:
+      TS_AUTHKEY: ${{ inputs.ts_authkey }}
+      VNC_PASS: ${{ inputs.debug_password }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name:  Setup Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ env.TS_AUTHKEY }}
+          version: "latest"
+
+      - name: 🖥️ Enable Screen Sharing (VNC)
+        run: |
+          # Enable Apple Remote Desktop (VNC)
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -activate \
+            -configure -access -on \
+            -configure -allowAccessFor -specifiedUsers \
+            -configure -restart -agent \
+            -privs -all
+
+          # Set VNC password
+          echo "${VNC_PASS}" | sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvnclegacy -vnclegacy yes
+          
+          echo "${VNC_PASS}" | sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -clientopts -setvncpw -vncpw "${VNC_PASS}"
+
+          # Add current user to allowed users
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -configure -access -on -users "$(whoami)"
+
+          echo "✅ VNC enabled on port 5900"
+          echo "📍 Tailscale IP: $(tailscale ip -4)"
+          echo "🔗 Connect via: vnc://$(tailscale ip -4):5900"
+          echo "⏰ Session expires in 30 minutes"
+
+      - name: 🧪 Debug Session
+        run: |
+          echo "🖥️ VNC Server running..."
+          echo "Connect to: vnc://$(tailscale ip -4):5900"
+          echo "Password: ${VNC_PASS}"
+          echo ""
+          echo "📋 Available actions:"
+          echo "  - Open Safari, Xcode, Terminal via Spotlight"
+          echo "  - Run your build commands manually"
+          echo "  - Inspect environment variables"
+          echo ""
+          echo "⏳ Keeping session alive for 25 minutes..."
+          
+          # Keep job alive for debugging
+          for i in {1..50}; do
+            echo "💓 Heartbeat: $i/50 (remaining: $((50-i)) checks)"
+            sleep 30
+          done
+
+      - name: 🧹 Cleanup VNC
+        if: always()
+        run: |
+          echo "🔒 Disabling VNC..."
+          sudo /System/Library/CoreServices/RemoteManagement/ARDAgent.app/Contents/Resources/kickstart \
+            -deactivate \
+            -configure -access -off
+          echo "✅ VNC disabled"
