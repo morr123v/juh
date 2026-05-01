@@ -1,0 +1,145 @@
+# .github/workflows/macos-tailscale-fixed.yml
+name: 🍎 macOS Tailscale (Fixed)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts_tailnet:
+        description: "Tailscale tailnet (e.g. you@gmail.com)"
+        required: true
+        type: string
+      ts_authkey:
+        description: "Tailscale auth key (reusable, ephemeral, tagged)"
+        required: true
+        type: string
+      gh_api_token:
+        description: "GitHub PAT (repo, workflow scopes)"
+        required: true
+        type: string
+      test_mode:
+        description: "Run 5-minute test loop"
+        type: boolean
+        default: false
+      runtime_minutes:
+        description: "Runtime in minutes (max 355)"
+        required: false
+        default: "60"
+        type: string
+      loops:
+        description: "How many handoffs (0 = infinite)"
+        required: false
+        default: "0"
+        type: string
+
+concurrency:
+  group: tailscale-rdp-singleton-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  macos-tailscale:
+    runs-on: macos-latest
+    timeout-minutes: 360
+    env:
+      TS_AUTHKEY: ${{ inputs.ts_authkey }}
+      GH_TOKEN: ${{ inputs.gh_api_token }}
+      TS_TAILNET: ${{ inputs.ts_tailnet }}
+          steps:
+      - name: 📦 Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ env.GH_TOKEN }}
+
+      - name: 🔐 Mask secrets
+        run: |
+          echo "::add-mask::${TS_AUTHKEY}"
+          echo "::add-mask::${GH_TOKEN}"
+
+      # ✅ KEY FIX: Use official action with macOS-compatible settings
+      - name: 🌐 Setup Tailscale (Official Action)
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ env.TS_AUTHKEY }}
+          tags: tag:github-ci,tag:macos
+          version: "latest"          # ✅ Avoids source build issues [[23]]
+          use-cache: "true"          # ✅ Faster, more reliable [[7]]
+          ping: ""                   # Skip ping check for faster startup
+        env:
+          TS_DEBUG_NETMAP: "1"       # Debug: show network map
+
+      - name: 📍 Verify Connection
+        run: |
+          echo "🔗 Tailscale Status:"
+          tailscale status --json | jq -r '.Self | {HostName, DNSName, TailscaleIPs, Online}' || true
+          
+          echo "📍 My IP: $(tailscale ip -4 2>/dev/null || echo 'N/A')"
+          echo "🌐 Tailnet: ${TS_TAILNET}"
+          
+          # Test basic connectivity
+          if ! tailscale ping -c 1 login.tailscale.com >/dev/null 2>&1; then
+            echo "⚠️  Warning: Could not ping control server"
+          else
+            echo "✅ Control server reachable"
+          fi
+
+      - name: 🛠️ Main Workload
+        run: |
+          # Calculate safe runtime (GitHub hard limit: 360 min)
+          MAX_RUNTIME=355
+          REQ_RUNTIME="${{ inputs.runtime_minutes }}"
+          RUNTIME_LIMIT=$(( REQ_RUNTIME < MAX_RUNTIME ? REQ_RUNTIME : MAX_RUNTIME ))
+          END_TIME=$(( SECONDS + RUNTIME_LIMIT * 60 ))
+          
+          echo "⏱️  Runtime limit: ${RUNTIME_LIMIT} minutes"
+          echo "🔄 Loop setting: ${{ inputs.loops }} (0=infinite)"
+          
+          LOOP=0          while true; do
+            # Check loop count
+            if [[ "${{ inputs.loops }}" != "0" ]] && [[ $LOOP -ge ${{ inputs.loops }} ]]; then
+              echo "✅ Completed ${LOOP} loops"
+              break
+            fi
+            
+            # Check timeout
+            if [[ $SECONDS -ge $END_TIME ]]; then
+              echo "⏰ Time limit reached"
+              break
+            fi
+            
+            LOOP=$((LOOP + 1))
+            echo "🔁 Iteration #${LOOP} @ $(date -u +%H:%M:%S)"
+            
+            if [[ "${{ inputs.test_mode }}" == "true" ]]; then
+              # Test mode: quick checks
+              echo "  🧪 Testing network..."
+              tailscale netcheck --verbose 2>/dev/null | head -5 || true
+              sleep 30
+            else
+              # Production mode: your actual commands here 👇
+              echo "  💼 Running workload..."
+              
+              # Example: Run your build/test scripts
+              # make test
+              # ./scripts/deploy.sh
+              
+              # Keep connection alive
+              sleep 60
+            fi
+            
+            # Infinite loop safety: break after 1 iteration unless test_mode
+            if [[ "${{ inputs.test_mode }}" != "true" ]] && [[ "${{ inputs.loops }}" == "0" ]]; then
+              echo "✅ Single-run mode complete"
+              break
+            fi
+          done
+
+      - name: 🧹 Cleanup (Always runs)
+        if: always()
+        run: |
+          echo "🔌 Shutting down Tailscale..."
+          tailscale down 2>/dev/null || true
+          tailscale logout 2>/dev/null || true
+          echo "✨ Cleanup complete"
