@@ -1,0 +1,12 @@
+# Self-hosted runner on your Mac mini
+name: Self-Hosted macOS with VNC
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: self-hosted  # Your own Mac
+    steps:
+      - uses: actions/checkout@v4
+      - run: npm test
+      - run: xcodebuild -project MyProject.xcodeproj
